@@ -1,60 +1,65 @@
 
-name: Build OJO PisoWiFi IMG - Orange Pi One
+name: Build OJO PisoWiFi - Orange Pi One
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
-      - ".github/workflows/build-orangepi-one.yml"
+      - ".github/workflows/**"
+      - "userpatches/**"
+      - "gpio-coin/**"
 
 permissions:
   contents: read
 
 concurrency:
-  group: orangepi-one-image
+  group: ojopisowifi-orange-pi-one
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build Armbian image
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
     steps:
-      - name: Checkout PisoWiFi source
+      - name: Checkout build project
         uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git curl wget xz-utils zip unzip \
-            qemu-user-static binfmt-support \
-            debootstrap debian-archive-keyring \
-            build-essential ca-certificates \
-            python3 python3-yaml
+            git curl wget jq \
+            docker.io qemu-user-static \
+            binfmt-support xz-utils \
+            parted dosfstools e2fsprogs
 
-      - name: Clone Armbian build framework
+      - name: Enable Docker
         run: |
-          git clone --depth 1 \
-            https://github.com/armbian/build.git \
-            armbian-build
+          sudo systemctl start docker
+          docker --version
 
-      - name: Configure Orange Pi One image
-        working-directory: armbian-build
+      - name: Checkout Armbian build system
+        uses: actions/checkout@v4
+        with:
+          repository: armbian/build
+          path: armbian-build
+          ref: main
+
+      - name: Copy customizations
         run: |
-          mkdir -p userpatches
+          mkdir -p armbian-build/userpatches
+          cp userpatches/config-pisowifi.conf \
+            armbian-build/userpatches/
+          cp userpatches/customize-image.sh \
+            armbian-build/userpatches/
 
-          cat > userpatches/config-pisowifi.conf <<'EOF'
-          BOARD="orangepione"
-          BRANCH="current"
-          RELEASE="trixie"
-          BUILD_MINIMAL="yes"
-          BUILD_DESKTOP="no"
-          KERNEL_CONFIGURE="no"
-          EOF
+          mkdir -p armbian-build/userpatches/overlay/opt/pisowifi
+          cp gpio-coin/coin_acceptor.py \
+            armbian-build/userpatches/overlay/opt/pisowifi/
 
-      - name: Build Armbian minimal image
+      - name: Build Orange Pi One OS
         working-directory: armbian-build
         run: |
           ./compile.sh build \
@@ -64,32 +69,28 @@ jobs:
             BUILD_MINIMAL=yes \
             BUILD_DESKTOP=no \
             KERNEL_CONFIGURE=no \
-            SHARE_LOGS=no
+            COMPRESS_OUTPUTIMAGE=no
 
-      - name: Locate generated image
-        id: image
+      - name: Find and validate image
         run: |
           set -eu
           mkdir -p release
+          find armbian-build/output/images \
+            -maxdepth 1 -type f -name '*.img' \
+            -size +100M -exec cp {} release/ \;
 
-          IMAGE="$(find armbian-build/output/images \
-            -maxdepth 1 -type f \
-            \( -name '*.img' -o -name '*.img.xz' \) \
-            | head -n 1)"
+          test -n "$(find release -name '*.img' -print -quit)" \
+            || { echo "No IMG produced"; exit 1; }
 
-          if [ -z "$IMAGE" ]; then
-            echo "Walang IMG na nabuo. Tingnan ang build logs."
-            exit 1
-          fi
-
-          cp "$IMAGE" release/
-          ls -lh release/
+          cd release
+          sha256sum *.img > SHA256SUMS.txt
 
       - name: Upload flashable image
         uses: actions/upload-artifact@v4
         with:
           name: OJO-PisoWiFi-OrangePi-One-IMG
-          path: release/*
+          path: |
+            release/*.img
+            release/SHA256SUMS.txt
           if-no-files-found: error
-          retention-days: 7
-          
+          retention-days: 14
