@@ -1,0 +1,65 @@
+
+name: Build Orange Pi One IMG
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget xz-utils zip \
+            build-essential bc bison flex \
+            libssl-dev device-tree-compiler \
+            python3 python3-pip
+
+      - name: Clone Armbian build system
+        run: |
+          git clone --depth 1 \
+            https://github.com/armbian/build.git \
+            armbian-build
+
+      - name: Build Orange Pi One OS IMG
+        working-directory: armbian-build
+        run: |
+          ./compile.sh build \
+            BOARD=orangepione \
+            BRANCH=current \
+            RELEASE=trixie \
+            BUILD_MINIMAL=yes \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no
+
+      - name: Collect IMG
+        run: |
+          set -eu
+          mkdir -p release
+          find armbian-build/output/images \
+            -maxdepth 1 -type f \
+            \( -name '*.img' -o -name '*.img.xz' \) \
+            -exec cp -v {} release/ \;
+          test -n "$(find release -type f \
+            \( -name '*.img' -o -name '*.img.xz' \) -print -quit)"
+
+      - name: Upload IMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Orange-Pi-One-OS-IMG
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+          
